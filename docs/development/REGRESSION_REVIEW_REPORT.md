@@ -1,6 +1,6 @@
-# Astra review: parcel_sorting
+# Regression review: parcel_sorting
 
-검수일: 2026-09-19. 작업 브랜치: `astra-review`.
+검수일: 2026-09-19.
 
 ## 1. 결론과 검증 범위
 
@@ -27,7 +27,7 @@ NumPy 2.4.6과 Pyflakes 3.4.0은 검수용 임시 디렉터리에만 설치했�
 | Original | `08f0d16^` = `2d5589d` |
 | Sol baseline | `08f0d16115e284ca9a30b68d9693265b6a1fb285` |
 | Audit result | 위 HEAD 위의 미커밋 working-tree 변경 |
-| 시작 상태 | `astra-review`, clean working tree |
+| 시작 상태 | clean working tree |
 
 `git log`, `git diff 08f0d16^ 08f0d16`, `git show 08f0d16^:<path>`로
 실제 원본을 읽었다. 원본 A/B뿐 아니라 dual runner의 `_CELL_A_SOURCE`,
@@ -395,7 +395,7 @@ Current는 이번 수정 후 working tree이며 Sol 결함은 Notes에 명시한
 | `README.md` | worker 내부 World.step 예외를 정확히 설명, audit 링크 |
 | `REFACTOR_ANALYSIS.md` | 역사적 문서임을 표시하고 잘못된 isolation 가정의 정정 링크 |
 | `ISAAC_SIM_SMOKE_TEST.md` | shared lifecycle·slot·anchor·종료·Vision 경계 검증 보완 |
-| `ASTRA_REVIEW_REPORT.md` | 본 보고서 및 기능 비교표 |
+| `REGRESSION_REVIEW_REPORT.md` | 본 보고서 및 기능 비교표 |
 
 M0609 아래 경로는 `isaacsim_dual_robot_palletizing/M0609/` 기준이다.
 config profile, motion algorithm, RMPFlow 값, controller behavior, topic/service 이름,
@@ -431,4 +431,4 @@ A standalone, B standalone, dual 순서로 실제 확인해야 한다. 특히 A/
 실행 동등성 검증 완료로 표시하면 안 된다.
 
 Git commit/push/remote 변경, reset/clean/history rewrite는 수행하지 않았다.
-baseline commit과 `astra-review` 브랜치를 보존했다.
+baseline commit과 검수 결과를 보존했다.

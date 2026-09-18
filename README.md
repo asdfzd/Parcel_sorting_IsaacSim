@@ -1,177 +1,206 @@
-# 🤖 cobot3 — 자동 택배 분류 및 검사 시스템 (Isaac Sim + ROS2 + AI Vision)
+# Isaac Sim Dual-Robot Parcel Sorting & Palletizing
 
-`cobot3`는 ROS2 Humble 기반의 택배 박스 비전 인식 패키지입니다. Isaac Sim(또는 일반 ROS2 카메라 토픽)에서 입력되는 영상 스트림을 받아 **YOLO11** 모델로 택배 박스(`package`)와 QR 라벨(`qr_label`)을 감지하고, QR 영역을 crop하여 배송 구역(ZONE) 정보를 판독한 뒤 **PyQt5 GUI**에서 시스템 상태와 인식 결과를 모니터링할 수 있도록 구성되어 있습니다.
+### M0609 · RMPFlow · VGC10 · ROS 2 · Vision
 
-프로젝트의 최종 목표는 컨베이어 위로 이동하는 택배 박스를 인식하고, QR 또는 송장 정보를 기준으로 `ZONE_A` ~ `ZONE_E`와 같은 목적지 구역을 판단한 뒤, **Doosan M0609 로봇팔 + VGC10 흡착 그리퍼**를 이용해 박스를 지정 위치로 분류하는 것입니다.
+**`Parcel_sorting_IsaacSim`은 Doosan M0609 로봇 두 대의 흡착 이송·팔레타이징과 택배/QR 인식을 다루는 Isaac Sim 기반 물류 자동화 프로젝트입니다.** Robot A/B가 컨베이어의 박스를 집어 팔레트에 적재하는 제어 코드와, YOLO11·QR 디코딩·PyQt5 모니터링을 담당하는 ROS 2 `cobot3` 패키지를 포함합니다.
 
-현재 `cobot3` 패키지는 전체 시스템 중 **비전 인식 · QR 디코딩 · 상태 모니터링 GUI**를 담당합니다. M0609 로봇팔 제어, VGC10 흡착 그리퍼, Isaac Sim USD 환경 구성은 별도 로봇팔 실행 파트에서 담당하며, 두 파트는 ROS2 토픽(`/qr_code`)을 통해 연동됩니다.
+로봇·그리퍼·컨베이어·팔레트의 USD 장면, RMPFlow motion control, PhysX 물체 결합, 카메라 인식을 함께 다루는 **로봇 디지털 트윈 / Physical AI 개발 사례**입니다. 핵심 엔지니어링 작업은 중복된 A/B 제어 코드를 공통 모듈로 통합하고, 기능 동등성 검수에서 발견한 로봇별 상태 혼선과 흡착 결과 전달 문제를 수정한 것입니다.
 
-> ⚠️ 본 문서는 제출 가이드라인 기준 임시(draft) 통합본입니다. 본문 곳곳의 "확인 필요" 표시 항목은 최종 제출 전 검증 및 보완이 필요합니다.
+> **현재 상태:** 듀얼 로봇 팔레타이징과 Vision 노드의 구현이 있으며, 정적 검사 및 unittest/mock 기반 회귀 검사를 수행했습니다. QR 결과에서 로봇 구역 명령으로 이어지는 연결은 미완성입니다. **전체 Isaac Sim / PhysX / ROS 2 런타임 검증은 별도 smoke test 단계로 남아 있습니다.**
+
+[코드 검수 결과](docs/development/REGRESSION_REVIEW_REPORT.md) · [리팩터링 분석](docs/development/REFACTOR_ANALYSIS.md) · [런타임 검증 체크리스트](docs/ISAAC_SIM_SMOKE_TEST.md)
 
 ---
 
 ## 📌 주요 기능 (Key Features)
 
-### 1. 택배 / QR 인식 (Parcel & QR Detection)
-- **탐지:** YOLO11 모델로 컨베이어 위 택배(`package`)와 QR 라벨(`qr_label`) bbox를 각각 탐지하고, 가장 가까운 쌍끼리 매칭합니다.
-- **디코딩:** 매칭된 QR 라벨 bbox를 crop한 뒤 `pyzbar`로 우선 디코딩하고, 실패 시 OpenCV `QRCodeDetector`로 fallback합니다. 디코딩 성공 시 결과를 `/qr_code`로 발행합니다. (전체 이미지 직접 스캔 방식은 위치 불확실성·해상도 문제로 폐기, bbox crop 방식으로 전환)
-- **정확도:** Isaac Sim Replicator로 생성한 합성 데이터 300장으로 학습, **mAP50 = 0.995** 달성.
-- QR 라벨이 없는 박스는 `/parcel_no_label`로 예외 처리됩니다.
+### 1. Isaac Sim 기반 Dual M0609 Palletizing
 
-### 2. 분류 및 게이트 제어 (Sorting & Gate Control)
-- `/qr_code`로 발행된 ZONE 값(`ZONE_A` ~ `ZONE_E`)에 따라 택배를 해당 구역으로 분류합니다.
-- 게이트 제어는 별도 `/simulation_control` 토픽이 아닌, **컨베이어 커터(물리적 게이트)** 를 통해 수행합니다.
-- `parcel_hub_node`가 중앙에서 영상 재배포, 노드 상태 모니터링, 워치독(타임아웃 시 재명령)을 관리하며 `/hub/state`를 퍼블리시합니다.
+- **Robot A / Robot B:** 각 로봇의 box, pick-ready zone, pallet slot, tool/joint 경로를 별도 설정으로 관리합니다. standalone A/B와 shared World 기반 dual 실행을 지원합니다.
+- **Motion control:** M0609 URDF·robot description·RMPFlow 설정을 사용해 Cartesian 목표를 제어하고, 관절 회전 및 home 복귀 단계와 조합합니다.
+- **VGC10 suction tool:** tool pose를 따라가는 VGC10 visual과 박스 윗면 흡착 조건을 계산합니다. grasp 시 로봇 link와 박스를 `UsdPhysics.FixedJoint`로 연결하고, release 시 joint를 제거합니다.
+- **Palletizing sequence:** 박스 정지/준비 구역 판정 → 접근·정렬 → 흡착 → 안전 높이로 lift → joint swing → slot 접근·yaw 정렬·하강 → release → home → 다음 박스 선택.
+- **Scene interaction:** 박스 physics 활성화 순서, 구역별 게이트, 적재 후 가상 forklift 이송과 팔레트 하강을 profile에 따라 실행합니다. 가상 forklift는 pallet/cargo를 freeze하고 Xform으로 이동시키는 방식입니다.
+- **ROS 2 Bridge:** dual runner가 Bridge를 활성화해 기존 USD 카메라 graph를 사용하는 구조입니다. 실제 카메라 publisher 생성과 토픽 전송은 런타임 검증 대상입니다.
 
-### 3. 실시간 모니터링 GUI (PyQt5)
-- 컨베이어 영상, YOLO 감지 시각화, QR crop 이미지, QR 판독 결과를 한 화면에서 확인합니다.
-- 허브 · detector · QR decoder 상태를 모니터링하고, emergency stop / reset / confidence threshold 조절 등의 제어 UI를 제공합니다.
-- 분산 환경(Vision PC ↔ Isaac Sim PC) 간 ROS2 통신 상태를 함께 모니터링합니다.
+### 2. 택배 / QR 인식 (Parcel & QR Detection)
 
-### 4. (확장) 로봇팔 분류 연동
-- `cobot3`는 로봇팔을 직접 움직이지 않고, **로봇팔 분류 동작을 위한 비전 판단 결과(`/qr_code`)를 제공**합니다.
-- M0609 로봇팔 제어 노드가 `/qr_code`를 구독해 ZONE별 목표 좌표로 이동, VGC10 흡착 그리퍼로 박스를 분류하는 구조로 확장 가능합니다. (자세한 내용은 "🦾 로봇팔 연동 방향" 섹션 참고)
+- **탐지:** YOLO11 모델로 택배(`package`)와 QR 라벨(`qr_label`) bbox를 탐지하고, 박스 중심에서 가장 가까운 QR 라벨을 매칭합니다.
+- **디코딩:** QR bbox를 crop하여 `pyzbar`로 우선 판독하고, 실패 시 OpenCV `QRCodeDetector`로 fallback합니다. 성공한 문자열을 `/qr_code`로 발행합니다.
+- **라벨 미검출 알림:** QR 라벨이 검출되지 않은 프레임의 박스에 대해 `/parcel_no_label`로 `NO_LABEL`을 발행합니다. 예외 박스를 물리적으로 분리하는 기능은 별도 통합 과제입니다.
+- **기존 학습 결과:** 기존 프로젝트 기록에는 Isaac Sim Replicator 합성 이미지 **300장**, YOLO 학습 **mAP50 = 0.995**가 남아 있습니다. `Vision/models/`의 가중치는 포함되어 있으나, 현재 저장소에는 해당 데이터셋 생성·학습·평가를 재현하는 코드가 확인되지 않습니다. 이 수치는 이번 검수에서 재측정하지 않았으며, Replicator 생성 framework 구현 완료를 의미하지 않습니다.
+
+### 3. 상태 모니터링과 GUI
+
+- `parcel_hub_node`가 영상 재배포, detector/QR 상태 수집, 워치독 재명령과 `/hub/state`, `/hub/alert` 발행을 담당합니다.
+- PyQt5 GUI는 컨베이어 영상, YOLO 시각화, QR crop과 판독 결과, 노드 상태를 표시하는 구성을 제공합니다.
+- GUI의 제어 버튼은 구현되어 있지만 detector/hub와 일부 토픽명이 다르고, 시뮬레이터의 정지·reset 명령 수신 코드도 연결되어 있지 않습니다. 통합 제어 완료나 안전 기능 검증으로 해석하지 않습니다.
+- PatchCore 이상 탐지는 기본 실행 파이프라인에서 제외된 **별도 prototype**입니다.
 
 ---
 
 ## 🏗️ 시스템 설계 (System Architecture)
 
-### 전체 구조
-시스템은 **두 대의 PC**에 분산되어 동작합니다.
+### 로봇 실행과 Vision의 연결 경계
 
-| PC | Hostname | IP | 역할 |
+```text
+Isaac Sim / Conveyor_lift.usd
+  ├─ shared World → Robot A worker / Robot B worker
+  │                   └─ RMPFlow + VGC10 + Physics FixedJoint → palletizing
+  ├─ box schedule / gate / virtual forklift
+  └─ 기존 USD camera graph + ROS 2 Bridge
+       │ /rgb (실제 발행 확인 필요)
+       ▼
+image_transport → /rgb/compressed → parcel_hub_node
+                                      │ /hub/rgb/compressed
+                         ┌────────────┴──────────────┐
+                         ▼                           ▼
+                parcel_detector_node         qr_decoder_node
+                         └─ /parcel_with_qr ────────►│
+                                                    ├─ /qr_crop_image
+                                                    └─ /qr_code (판독 문자열)
+영상 · detection · QR 결과 · hub 상태 ────────────────► PyQt5 GUI
+
+/qr_code ── [변환 bridge 미구현] ──► /tmp/zone_command.txt의 A 또는 B
+                                            └─ dual runner의 gate 제어
+```
+
+현재 로봇의 pick 대상과 적재 위치는 **USD 장면의 box/zone/slot 정보**로 결정합니다. Vision bbox를 로봇 좌표로 변환하거나 `/qr_code`로 로봇 목표를 직접 지정하는 통합은 구현되어 있지 않습니다. `ZONE_A`/`ZONE_B` 등의 QR 문자열을 gate 입력 `A`/`B`로 변환하는 writer도 저장소에 없습니다. 다중 PC에서는 시뮬레이터 측 파일 전달 방식까지 연결해야 합니다.
+
+### 분산 실행 구성
+
+기존 개발 환경은 Vision PC와 Isaac Sim PC를 유선 LAN으로 연결한 구성이었습니다. 아래 주소는 해당 환경의 예시이며, 현재 checkout의 전체 통합 동작을 보증하는 설정은 아닙니다.
+
+| PC | Hostname | IP 예시 | 역할 |
 |---|---|---|---|
-| Vision PC | `vision` | 10.0.0.1 | YOLO11 추론, QR 디코딩, PyQt5 GUI, ROS2 허브 노드 |
-| Isaac Sim PC | `IsaacSim05` | 10.0.0.2 | Isaac Sim 시뮬레이션 (컨베이어, 카메라, OmniGraph 제어) |
+| Vision PC | `vision` | `10.0.0.1` | YOLO11, QR, PyQt5 GUI, ROS 2 hub |
+| Isaac Sim PC | `IsaacSim05` | `10.0.0.2` | M0609 A/B, USD/PhysX, 카메라 graph, gate |
 
-두 PC는 **유선 기가비트 LAN**으로 직접 연결되어 있으며, 정적 IP(netplan) + FastDDS XML 프로필로 유선 인터페이스만 사용하도록 제한되어 있습니다 (설정 방법은 "📦 의존성 → 0. PC 간 LAN 통신 설정" 참고).
+ROS domain은 실행 스크립트 기준 `103`입니다. 실제 장비의 DDS/QoS와 네트워크 설정, 카메라 토픽을 맞춰야 합니다.
 
-### 전체 데이터 흐름
+---
 
-```text
-[Isaac Sim / Camera]
-        │
-        │  /rgb
-        ▼
-[image_transport]
-        │
-        │  /rgb/compressed
-        ▼
-[parcel_hub_node]  ← /state/detector, /state/qr_decoder
-        │                  ↑ 재명령(워치독)
-        │  /hub/rgb/compressed     /cmd/detection_enable
-        ▼                          /cmd/conf_threshold
-[parcel_detector_node]
-        │
-        ├─ /parcel_detections
-        ├─ /parcel_detections/annotated
-        ├─ /parcel_with_qr
-        └─ /parcel_no_label
-        │
-        ▼
-[qr_decoder_node]
-        │
-        ├─ /qr_code   (ZONE_A ~ ZONE_E)
-        └─ /qr_crop_image
-        │
-        ▼
-[parcel_control_gui]  ← /hub/state, /hub/alert (경고)
-        │
-        ▼
-[M0609 / VGC10 Robot Arm Control Node]  (별도 파트, /qr_code 구독)
-```
+## 🛠️ Engineering: 공통 모듈과 회귀 검수
 
-### 시스템 역할 분리
+### 중복 스크립트에서 공통 core로
 
-| 구분 | 담당 내용 | 관련 파일 |
+과거에는 A/B 각각의 대형 단일 Python 스크립트와, 소스를 문자열로 내장하여 `exec(compile(...))`로 실행하는 dual wrapper가 있었습니다. 현재는 `palletizing/` 공통 core와 네 개의 명시적 profile을 사용합니다. **Robot A/B entrypoint는 SimulationApp을 생성한 뒤 config와 공통 bootstrap을 호출하는 얇은 구조**입니다.
+
+| 공통 모듈 | 역할 |
+|---|---|
+| `bootstrap.py` | standalone app/World/reset/close lifecycle, 확장 및 logging 설정 |
+| `config.py` | A/B standalone·dual의 `RobotCellConfig`와 동작 정책 |
+| `diagnostics.py` | pose, joint, bbox, yaw 진단 및 mass/inertia 보조 처리 |
+| `forklift.py` | B standalone의 home 복귀와 병행하는 pallet lowering coordinator |
+| `palletizing.py` | 박스/구역 판정, slot·goal 계산, task와 motion 목표 계산 |
+| `physics.py` | rigid body·collision·FixedJoint attach/release |
+| `scene.py` | USD prim/transform/bbox, VGC10 visual/follow, 흡착 판정 |
+| `settings.py` | 공통 threshold, 좌표·관절값, timing 및 motion 설정 |
+| `worker.py` | 로봇별 실행 상태, 공통 palletizing sequence, 가상 forklift coroutine |
+
+세 entrypoint는 Isaac 의존 모듈보다 먼저 `SimulationApp`을 생성합니다. `palletizing.config`는 단독 import해도 app/World나 Stage를 생성하지 않습니다. Dual은 A/B task 등록 후 master가 shared `World.reset()`을 한 번 호출합니다. 일반 루프 외에 worker 초기 준비·release 관찰 구간에도 World step이 있으므로, 모든 물리 step을 wrapper만 수행하는 구조는 아닙니다.
+
+### A/B 동작 차이 보존
+
+| Profile | 대상 | 적재 및 scene 동작 |
 |---|---|---|
-| 비전 인식 | 택배 박스 및 QR 라벨 감지 | `parcel_detector_node.py` |
-| QR 판독 | QR crop 및 ZONE 값 디코딩 | `qr_decoder_node.py` |
-| 허브 | 영상 중계, 상태 감시, 명령 중계 | `parcel_hub_node.py` |
-| GUI | 영상, QR 결과, 노드 상태 확인 | `parcel_control_gui.py` |
-| 이상 감지 (미사용) | PatchCore 기반 박스 훼손 판별 | `patchcore_anomaly_node.py` |
-| 로봇팔 동작 (별도 파트) | M0609 + VGC10 흡착 이송 및 분류 | 별도 Isaac Sim py / USD 파일 |
+| A standalone | `m0609_A`, `OriBoxA_*`, `APalt` | 4개 적재 설정, lower/settle 중 fused yaw 보정, 4개 release 후 가상 forklift |
+| B standalone | `m0609_B`, `OriBoxB_*`, `BPalt` | 반복 slot marker, 두 번째 release 후 home 복귀와 병행하는 BPalt 하강, 4개 후 가상 forklift |
+| A dual | A 경로, 독립 tool/joint 상태 | 2개 적재 후 APalt 가상 forklift |
+| B dual | B 경로, 독립 tool/joint 상태 | 2개 적재, pallet lowering/forklift 비활성 |
 
-### Isaac Sim 컨베이어 제어
-- OmniGraph 변수 `Velocity`를 `graph.find_variable("Velocity")` → `variable.set(...)`으로 제어합니다.
-- 방향은 `Sorter/ActionGraph` 내 `ConstantFloat` 노드(`Direction`, 기본값 90.0°)로 제어합니다.
+`A_STANDALONE_CONFIG`, `B_STANDALONE_CONFIG`, `A_DUAL_CONFIG`, `B_DUAL_CONFIG`로 이러한 차이를 표현합니다. 리팩터링 검수는 기존 RMPFlow 설정과 motion 수치·이벤트 순서를 보존하는 데 초점을 맞췄습니다.
 
-> (참고: ArUco 마커는 개념 검토 단계에서만 고려되었고, 실제 구현/테스트에는 사용되지 않았습니다.)
+### 리팩터링 후 회귀 검수에서 확인하고 해결한 문제
 
-### 플로우 차트 (Logic Flow)
-```
-[Isaac Sim 컨베이어 시작]
-        │
-        ▼
-[카메라 입력 / parcel_detector_node]
-        │
-        ▼
-   YOLO11 탐지 ──► 택배 + QR 영역 검출?
-        │ No                  │ Yes
-        ▼                     ▼
-  계속 컨베이어 진행      bbox 크롭 → qr_decoder_node
-                              │
-                       pyzbar(우선) / OpenCV(fallback) QR 디코딩
-                              │
-                  ┌───────────┴────────────┐
-            ZONE_A ~ ZONE_E             디코딩 실패
-                  │                         │
-        parcel_hub_node가 상태 갱신     재시도 / NO_QR
-          (/hub/state, /qr_code)
-                  │
-        컨베이어 커터(게이트) 동작 → 분류 완료
-```
-*(최종 제출 시 위 플로우를 다이어그램 이미지로 별도 첨부 권장)*
+단순한 파일 분리 이후 **실행 경계에서 기능 동등성이 유지되는지** 검수했습니다. 지연 초기화와 shared mutable state의 회귀를 mock 테스트로 재현하고 다음을 수정했습니다.
+
+- **A/B scene setup 격리:** `World.reset()`의 지연 task 초기화와 중첩 callback에도 소유 worker context를 적용해, A가 B 설정으로 초기화되는 문제를 해결했습니다.
+- **발견한 prim 경로 전달:** USD 로딩에서 실제로 찾은 robot/tool 경로를 해당 worker와 scene/physics helper에 전달하도록 보완했습니다.
+- **흡착 상태 전달:** 같은 프레임의 최신 흡착 anchor를 FixedJoint 생성에 전달하고 실패 시 이전 결과를 지워, stale state 사용을 방지했습니다.
+- **진단 상태 격리:** B joint 검색을 active robot 경로 기준으로 수정하고 흡착 진단 counter를 A/B별로 분리했습니다.
+- **종료·정리 경로 보완:** standalone 초기화 오류와 dual main 종료 경로에서 소유 app의 `close()`가 실행되도록 `finally` 처리를 보완했습니다.
+
+기존 global helper와 긴 worker 흐름은 일부 남아 있습니다. Context 격리는 단일 스레드의 순차 실행과 callback 재진입을 위한 것이며, 완전한 instance 기반 설계나 멀티스레드 안전성을 주장하지 않습니다. 상세 근거는 [Regression review report](docs/development/REGRESSION_REVIEW_REPORT.md), 초기 구조 분석은 [Refactor analysis](docs/development/REFACTOR_ANALYSIS.md)에 기록되어 있습니다.
+
+### Validation 상태
+
+| 검증 범위 | 상태 |
+|---|---|
+| 원본/리팩터링 코드·설정 비교, AST/구문 검사, import 구조 검사 | 회귀 검수에서 수행 |
+| unittest 및 mock World 회귀 검사 | audit 기록 기준 **17개 통과** — config, A/B context, 흡착 상태, lowering, 종료 등 |
+| 실제 Isaac Sim / PhysX / ROS 2 전체 smoke test | **미완료 — 별도 환경에서 실행 필요** |
+
+**Static and mock-based regression checks were performed. Full Isaac Sim / PhysX / ROS 2 runtime validation remains a separate smoke-test step.**
+
+실제 검증은 A standalone → B standalone → dual 순서로 진행하며, FixedJoint 접촉·운반 안정성, RMPFlow 궤적과 slot 정렬, release/home 반복, 가상 forklift·B 병렬 하강, 카메라/ROS 토픽·gate timing, 종료 시 비동기 작업 처리를 확인해야 합니다. [Smoke test checklist](docs/ISAAC_SIM_SMOKE_TEST.md)에 절차와 로그 기준이 있습니다.
 
 ---
 
-## 📂 폴더 구조
+## 📂 Repository Structure
+
+주요 파일과 디렉터리만 표시했습니다. 저장소 이름은 `Parcel_sorting_IsaacSim`, Vision의 ROS 2 패키지 이름은 `cobot3`입니다.
 
 ```text
-cobot3/
-├── cobot3/
-│   ├── __init__.py
-│   ├── talker.py                  # ROS2 예제 - PC간 통신 테스트용
-│   ├── listener.py                # ROS2 예제 - PC간 통신 테스트용
-│   ├── parcel_detector_node.py
-│   ├── qr_decoder_node.py
-│   ├── patchcore_anomaly_node.py  # (이상 탐지, 실험용)
-│   ├── parcel_hub_node.py
-│   └── parcel_control_gui.py
-├── launch/
-│   └── parcel_detector.launch.py
-├── models/
-│   ├── parcel_qr_det.pt           # 기본 실행 스크립트에서 사용하는 모델
-│   ├── parcel_box_baseline.pt
-│   ├── parcel_box_conveyor_det.pt
-│   ├── parcel_box_isaac_det.pt
-│   ├── patchcore_memory_bank.pt   # PatchCore
-│   └── patchcore_threshold.pt     # PatchCore
-├── scripts/
-│   └── start_vision.sh
-├── resource/
-│   └── cobot3
-├── test/
-│   ├── test_copyright.py
-│   ├── test_flake8.py
-│   └── test_pep257.py
-├── package.xml
-├── setup.py
-├── setup.cfg
-└── LICENSE
+Parcel_sorting_IsaacSim/
+├── README.md
+├── isaacsim_dual_robot_palletizing/
+│   ├── Conveyor_lift.usd
+│   ├── M0609/
+│   │   ├── robot_a_palletizing_forklift.py
+│   │   ├── robot_b_palletizing_forklift.py
+│   │   ├── run_ab_dual_robot_ros_gate.py
+│   │   ├── palletizing/           # 위 공통 core 모듈
+│   │   ├── rmpflow/              # controllers, YAML, URDF
+│   │   ├── assets/               # VGC10 등
+│   │   ├── Collected_m0609_camera/
+│   │   ├── Collected_m0609_gripper/
+│   │   ├── doosan-robot2/
+│   │   └── onrobot_rg2/
+│   ├── ori0/
+│   ├── oriA/
+│   ├── oriB/
+│   ├── warehouse/
+│   └── omniverse-content-production.s3-us-west-2.amazonaws.com/
+├── Vision/                       # ROS 2 package: cobot3
+│   ├── cobot3/
+│   │   ├── parcel_detector_node.py
+│   │   ├── qr_decoder_node.py
+│   │   ├── parcel_hub_node.py
+│   │   ├── parcel_control_gui.py
+│   │   ├── patchcore_anomaly_node.py
+│   │   ├── talker.py
+│   │   └── listener.py
+│   ├── launch/parcel_detector.launch.py
+│   ├── models/                   # YOLO 및 PatchCore 가중치
+│   ├── scripts/start_vision.sh
+│   ├── resource/
+│   ├── test/                     # ROS package lint tests
+│   ├── package.xml
+│   ├── setup.py
+│   ├── setup.cfg
+│   └── LICENSE
+├── tests/
+│   ├── test_palletizing_config.py
+│   └── test_palletizing_runtime.py
+└── docs/
+    ├── ISAAC_SIM_SMOKE_TEST.md
+    └── development/
+        ├── REGRESSION_REVIEW_REPORT.md
+        └── REFACTOR_ANALYSIS.md
 ```
-
 
 ---
 
-## 🔍 주요 노드 설명
+## 🔍 Vision 주요 노드 설명
 
 ### 1. `parcel_hub_node` — 중앙 허브
 
 영상 재배포 및 각 노드 상태 감시를 담당하는 중앙 허브 노드입니다.
 
 - `/rgb/compressed` 영상 수신 → `/hub/rgb/compressed`로 재발행
-- detector, QR decoder, simulation 상태 감시 (타임아웃: detector 5초 / qr_decoder 8초, 최대 3회 재명령)
+- detector/QR decoder 워치독 (타임아웃: detector 5초 / QR decoder 8초, 최대 3회 재명령)
+- `/state/simulation` 구독은 있으나 저장소 Python에 대응 publisher는 없음
 - `/hub/state`, `/hub/alert`를 통해 GUI에 상태 정보 제공
 - `/cmd/detection_enable`, `/cmd/conf_threshold`, `/cmd/qr_enable`, `/cmd/relay_enable` 명령 처리(중계)
 
@@ -189,7 +218,7 @@ cobot3/
 YOLO11 모델로 택배 박스와 QR 라벨을 감지하는 노드입니다.
 
 - 입력 영상에서 `package`, `qr_label` 감지 (`vision_msgs/Detection2DArray`로 발행)
-- 박스 ↔ QR 라벨 매칭 → `/parcel_with_qr` 발행 / QR 라벨 없는 박스 → `/parcel_no_label`
+- 박스 ↔ QR 라벨 매칭 → `/parcel_with_qr` 발행 / QR 라벨이 검출되지 않은 프레임의 박스 → `/parcel_no_label`
 - 감지 결과 시각화 이미지(annotated) 발행
 - `/cmd/detection_enable`, `/cmd/conf_threshold`로 감지 on/off 및 confidence threshold 제어
 
@@ -199,7 +228,7 @@ YOLO11 모델로 택배 박스와 QR 라벨을 감지하는 노드입니다.
 | Publish | `/parcel_detections` | `vision_msgs/Detection2DArray` | 전체 감지 결과 |
 | Publish | `/parcel_detections/annotated` | `sensor_msgs/Image` | 시각화 이미지 |
 | Publish | `/parcel_with_qr` | `vision_msgs/Detection2DArray` | package + qr_label 매칭 결과 |
-| Publish | `/parcel_no_label` | `std_msgs/String` | 송장 또는 QR 미부착 박스 (`NO_LABEL`) |
+| Publish | `/parcel_no_label` | `std_msgs/String` | QR 라벨 미검출 알림 (`NO_LABEL`) |
 | Publish | `/state/detector` | `std_msgs/String` | detector 상태 |
 | Subscribe | `/cmd/detection_enable` | `std_msgs/Bool` | 감지 on/off |
 | Subscribe | `/cmd/conf_threshold` | `std_msgs/Float32` | YOLO confidence threshold 변경 |
@@ -216,10 +245,10 @@ YOLO가 감지한 QR 라벨 영역을 crop한 뒤 QR 값을 디코딩하는 노�
 |---|---|---|---|
 | Subscribe | `/hub/rgb/compressed` | `sensor_msgs/CompressedImage` | QR crop용 영상 |
 | Subscribe | `/parcel_with_qr` | `vision_msgs/Detection2DArray` | package + qr_label bbox |
-| Publish | `/qr_code` | `std_msgs/String` | 디코딩된 ZONE 값 |
+| Publish | `/qr_code` | `std_msgs/String` | 판독 문자열 (예: `ZONE_A`, JSON 아님) |
 | Publish | `/qr_crop_image` | `sensor_msgs/Image` | QR crop 확인용 이미지 |
 | Publish | `/state/qr_decoder` | `std_msgs/String` | QR decoder 상태 |
-| Subscribe | `/cmd/qr_enable` | `std_msgs/Bool` | QR decoder on/off 명령 |
+| Subscribe | `/cmd/qr_enable` | `std_msgs/Bool` | enable 상태 갱신 (현재 decode 중단에는 미반영) |
 
 ### 4. `parcel_control_gui` — 중앙 제어 GUI
 
@@ -234,53 +263,42 @@ PyQt5 기반 GUI 노드입니다.
 | `/rgb/compressed` | 컨베이어 입력 영상 |
 | `/parcel_detections/annotated` | YOLO 시각화 결과 |
 | `/parcel_with_qr` | QR이 포함된 택배 감지 결과 |
-| `/parcel_no_label` | QR 또는 송장 미부착 박스 |
+| `/parcel_no_label` | GUI는 CompressedImage 구독 — detector의 String과 타입 불일치 |
 | `/qr_crop_image` | QR crop 이미지 |
-| `/qr_code` | 최종 ZONE 결과 |
+| `/qr_code` | QR 판독 문자열 |
 | `/hub/state` | 허브 통합 상태 |
 | `/hub/alert` | 시스템 경고 |
 
-> `parcel_control_gui.py`는 `cv2`/`numpy`, `rclpy`/ROS2 메시지 패키지가 없어도 import 에러 없이 앱이 실행되도록 try/except로 방어되어 있습니다(`CV2_AVAILABLE`, `ROS2_AVAILABLE` 플래그). 다만 이 경우 카메라 피드·ROS2 통신 기능은 동작하지 않으므로, 실제 기능 사용을 위해서는 아래 의존성이 모두 필요합니다. 캡처 저장 경로(`~/parcel_captures/`, `qr_crops/`, `parcels/`)는 첫 실행 시 자동 생성됩니다.
+> GUI에는 optional import 처리가 있지만 실제 영상·ROS 통신에는 관련 의존성이 필요합니다. 캡처 경로는 `~/parcel_captures/` 아래에 생성됩니다. 제어 토픽 및 메시지 타입의 연결 한계는 아래 통합 과제를 참고하세요.
 
-### 5. `patchcore_anomaly_node` — 이상 감지 (현재 미사용)
+### 5. `patchcore_anomaly_node` — 이상 감지 prototype
 
 PatchCore 기반 박스 이상 감지 노드입니다. RGB 이미지와 YOLO bbox로 박스 영역을 crop하고, PatchCore memory bank/threshold로 정상·훼손 여부를 판단해 `/parcel_anomaly`로 발행합니다.
 
-**테스트/실험용으로 작성되었으며 기본 `start_vision.sh` 파이프라인에는 포함되어 있지 않습니다.** 최종 제출 시 동작 대상에서 제외합니다.
+**별도 prototype이며 기본 `start_vision.sh` 파이프라인에는 포함되어 있지 않습니다.** raw `/rgb`와 detector bbox, 저장된 memory bank/threshold를 사용합니다. 기본 분류 시스템에 통합되거나 성능 검증이 완료된 기능으로 보지 않습니다.
 
 ---
 
 ## 💻 개발 환경 (Environment)
 
-- **OS:** Ubuntu 22.04 LTS
-- **Middleware:** ROS2 Humble Hawksbill
-- **Simulator:** NVIDIA Isaac Sim **5.1.0**
-- **Language:** Python 3.10
-- **Workspace:** `cobot3_ws` / Package: `cobot3`
-- **Domain ID:** `ROS_DOMAIN_ID=103`
-- **Display:** X11 (Wayland 비활성화, `WaylandEnable=false`)
-- **주요 외부 라이브러리:** OpenCV, PyQt5, Ultralytics YOLO, PyTorch, pyzbar
+기존 프로젝트에 기록된 개발 환경입니다. 현재 리팩터링 결과의 전체 런타임 검증 환경과는 구분합니다.
+
+- **OS / Middleware:** Ubuntu 22.04 LTS / ROS 2 Humble
+- **Simulator:** NVIDIA Isaac Sim 5.1.0 — 로봇 스크립트는 Isaac Sim 제공 Python 사용
+- **Vision:** Python 3.10, OpenCV, PyQt5, Ultralytics YOLO, PyTorch, pyzbar
+- **ROS 2 package:** `Vision/`의 `cobot3`, `ROS_DOMAIN_ID=103`
+- **기존 장비 기록:** Isaac Sim PC의 RTX 5080, X11 디스플레이와 유선 LAN 구성
+
+정확한 PyTorch/CUDA 버전 조합은 저장소에 고정되어 있지 않습니다. GPU 추론 및 Isaac Sim 실행 호환성은 사용할 장비에서 확인해야 합니다.
 
 ---
 
-## ⚙️ 사용 장비 (Hardware Setup)
+## 📦 의존성 (Installation)
 
-| PC | Hostname | IP | 역할 | CPU | GPU | RAM |
-|---|---|---|---|---|---|---|
-| Vision PC | `vision` | 10.0.0.1 | Vision/GUI | *(입력 필요)* | *(입력 필요)* | *(입력 필요)* |
-| Isaac Sim PC | `IsaacSim05` | 10.0.0.2 | Simulation | *(입력 필요)* | RTX 5080 (Blackwell) | *(입력 필요)* |
+<details>
+<summary>두 PC 실행용 LAN / FastDDS 설정 예시</summary>
 
-**네트워크:** 유선 기가비트 LAN 직결, 정적 IP + FastDDS XML 프로필(유선 인터페이스 제한)
-
-> ⚠️ 위 표의 PC 사양(CPU/GPU/RAM)은 placeholder입니다. 정확한 사양으로 교체해 주세요.
-
----
-
-## 📦 의존성 (Installation / requirements.txt)
-
-### 0. PC 간 LAN 통신 설정 (사전 준비)
-
-두 PC(`vision`, `IsaacSim05`)는 **유선 기가비트 LAN 직결**로 통신합니다. 다른 의존성 설치 전에 먼저 네트워크를 구성해야 합니다. 초기에는 WiFi로 연결했으나 지연/패킷 손실 문제로 유선으로 전환했습니다.
+기존 개발 환경의 설정 예시입니다. IP와 `enp131s0`는 실제 장비에 맞춰 바꿉니다.
 
 | 항목 | 내용 |
 |---|---|
@@ -325,23 +343,8 @@ network:
 양쪽 PC에서 권한 설정 후 적용:
 ```bash
 sudo chmod 600 /etc/netplan/99-wired-static.yaml
-sudo chmod 600 /etc/netplan/*.yaml
 sudo netplan apply
 ```
-
-> 💾 PC별 yaml 파일은 `99-wired-static-vision.yaml` / `99-wired-static-isaacsim.yaml`로 따로 보관해두고, 각 PC에서 아래처럼 복사해서 적용하는 방식을 사용했습니다.
-> ```bash
-> # Vision PC
-> sudo cp 99-wired-static-vision.yaml /etc/netplan/99-wired-static.yaml
-> sudo chmod 600 /etc/netplan/99-wired-static.yaml
-> sudo netplan apply
->
-> # Isaac Sim PC
-> sudo cp 99-wired-static-isaacsim.yaml /etc/netplan/99-wired-static.yaml
-> sudo chmod 600 /etc/netplan/99-wired-static.yaml
-> sudo netplan apply
-> ```
-> 설정 후에는 재부팅해도 랜선만 연결하면 자동으로 고정 IP가 잡힙니다.
 
 **b) 연결 확인 (ping)**
 
@@ -414,20 +417,17 @@ EOF
 export ROS_DOMAIN_ID=103
 export FASTRTPS_DEFAULT_PROFILES_FILE=~/.ros/fastdds_wired.xml
 ```
-실행 시마다 적용되도록 `~/.bashrc`에 추가하거나, 비전 파이프라인 실행 스크립트(`start_vision.sh`) 안에서 source 합니다. `start_vision.sh`는 내부적으로 `export ROS_DOMAIN_ID=103`을 자동 설정합니다.
-
-> ⚠️ **주의:** `FASTRTPS_DEFAULT_PROFILES_FILE`이 `.bashrc`에 항상 설정되어 있으면 로컬 `ros2 bag` 재생 시 충돌이 발생할 수 있습니다. bag 재생 전에는 해당 줄을 임시로 주석 처리하세요.
+`start_vision.sh`는 `ROS_DOMAIN_ID=103`을 설정합니다. FastDDS 프로필 경로는 실행 터미널에서 별도로 설정해야 합니다.
 
 **e) ROS2 토픽 통신 확인**
 ```bash
 ros2 topic list
-ros2 topic hz /front_stereo_camera/left/image_raw   # 예시 토픽
+ros2 topic hz /rgb
 ```
 
-**f) 알려진 이슈**
-- 비정상 종료(kill -9 등) 후 노드 간 통신 불가 시 → FastDDS 공유메모리 잔여 파일 정리 필요: `sudo rm -rf /dev/shm/fastrtps_*`
-- 두 PC의 `ROS_DOMAIN_ID`가 다르면 토픽이 전혀 보이지 않으므로 반드시 동일하게(`103`) 설정
-- 두 PC가 서로 다른 IP를 `interfaceWhiteList`에 넣으면(자기 IP가 아닌 상대 IP를 넣는 등) 통신이 되지 않으므로 주의
+양쪽 PC의 ROS domain, 프로필의 로컬 IP, 실제 publisher/subscriber QoS를 확인합니다.
+
+</details>
 
 ### 1. ROS2 패키지
 
@@ -438,30 +438,26 @@ sudo apt install ros-humble-desktop \
   ros-humble-vision-msgs \
   ros-humble-image-transport \
   ros-humble-compressed-image-transport
-sudo apt install python3-opencv python3-numpy python3-pyqt5 python3-pyzbar -y
+sudo apt install python3-opencv python3-numpy python3-pyqt5 python3-pyzbar tmux python3-colcon-common-extensions -y
 ```
-> ⚠️ **`ros-humble-vision-msgs`는 필수입니다.** `parcel_detector_node.py`, `qr_decoder_node.py`, `parcel_control_gui.py` 세 파일 모두 `from vision_msgs.msg import Detection2DArray, ...`를 사용합니다. 누락 시 import 단계에서 바로 실행이 실패합니다.
-> `image-transport`, `compressed-image-transport`는 Isaac Sim에서 발행하는 원본 `/rgb`를 `/rgb/compressed`로 변환하는 데 필요합니다 (아래 "3. 영상 압축 변환" 참고).
+> **`ros-humble-vision-msgs`는 Vision 통신에 필요합니다.** detector, QR decoder, GUI가 `Detection2DArray`를 사용하며, GUI의 optional import 처리만으로 실제 ROS 기능을 사용할 수는 없습니다.
+> `image-transport`, `compressed-image-transport`는 Isaac Sim에서 발행하는 원본 `/rgb`를 `/rgb/compressed`로 변환하는 데 필요합니다 (아래 "4. 영상 압축 변환" 참고).
 
 ### 2. Python (pip) 패키지
 
 **a) PyTorch (CUDA)**
 
-RTX 5080(Blackwell)을 사용 중이므로, GPU 가속이 정상 동작하는지 먼저 확인이 필요합니다.
+Vision 환경의 PyTorch 및 GPU 사용 가능 여부를 확인합니다. CUDA/PyTorch 설치 조합은 사용 장비에 맞춰 구성해야 하며, 아래 나머지 패키지 목록만으로 GPU 호환성이 보장되지는 않습니다.
 
 ```bash
 python3 -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
-- `torch.cuda.is_available()`이 `True`가 아니거나 PyTorch가 설치되어 있지 않다면, [PyTorch 공식 사이트](https://pytorch.org/get-started/locally/)에서 사용 중인 CUDA 버전에 맞는 설치 명령어를 확인 후 설치하세요.
-- ⚠️ Blackwell(RTX 50 시리즈)은 비교적 최신 GPU 아키텍처라 구버전 PyTorch/CUDA 조합에서는 인식이 안 되거나 호환성 문제가 발생할 수 있습니다 (Isaac Sim에서도 동일 이슈가 있었음). CUDA 12.x 이상 + 최신 PyTorch 권장.
-- ⚠️ **확인 필요:** 실제 설치에 사용한 정확한 pip 명령어(예: `pip install torch --index-url https://download.pytorch.org/whl/cu124`)를 기록해 주세요. 최종 제출본에는 정확한 명령어를 명시해야 재현 가능합니다.
 
 **b) 나머지 Python 패키지**
 ```bash
 pip3 install ultralytics torch torchvision pillow opencv-python-headless numpy PyQt5 pyzbar
 ```
-> ⚠️ `opencv-python`이 아닌 **`opencv-python-headless`** 를 사용해야 PyQt5와의 Qt 플러그인 충돌을 방지할 수 있습니다.
-> `ultralytics`는 PyTorch에 의존하므로, 위 a) 단계에서 GPU용 PyTorch를 먼저 설치한 뒤 `ultralytics`를 설치하는 순서를 권장합니다 (순서가 바뀌면 PyTorch가 CPU 버전으로 재설치될 수 있습니다).
+> 기존 환경에서는 PyQt5와 OpenCV의 Qt 플러그인 충돌을 고려해 headless OpenCV를 사용했습니다. 위 목록은 버전이 고정된 재현 환경이 아니므로 실제 의존성 조합을 확인해야 합니다.
 
 **c) pyzbar 시스템 의존성 (libzbar0)**
 ```bash
@@ -469,13 +465,13 @@ sudo apt install libzbar0 -y
 ```
 > `pyzbar`는 내부적으로 시스템 라이브러리 `libzbar0`를 필요로 합니다. 누락 시 import 시점(`ImportError: Unable to find zbar shared library`)에 오류가 발생합니다.
 
-**d) `package.xml` 의존성 보강 필요**
+**d) 의존성 선언 범위**
 
-현재 `package.xml`에는 ROS2 기본 의존성 위주로 작성되어 있고, 실행에 필요한 `ultralytics`, `pyzbar`, `PyQt5`, `torch`, `torchvision`, `Pillow` 등의 외부 Python 패키지는 명시되어 있지 않습니다. `colcon build`만으로는 이 패키지들이 설치되지 않으므로, 위 pip 명령을 **별도로** 실행해야 합니다. 최종 제출 전 `package.xml`/`requirements.txt`에 보강 권장.
+현재 `package.xml`에는 ROS2 기본 의존성 위주로 작성되어 있고, 실행에 필요한 `ultralytics`, `pyzbar`, `PyQt5`, `torch`, `torchvision`, `Pillow` 등의 외부 Python 패키지는 명시되어 있지 않습니다. `colcon build`만으로는 이 패키지들이 설치되지 않으므로, 외부 Python 의존성을 **별도로** 준비해야 합니다. 저장소에는 이를 모두 고정한 requirements 파일이 없습니다.
 
 ### 3. YOLO11 가중치 파일
 
-학습된 YOLO11 가중치(`.pt`)는 `cobot3/models/` 폴더 내에 포함되어 있습니다. 기본 실행 스크립트(`start_vision.sh`)는 **`parcel_qr_det.pt`** 를 사용합니다.
+학습된 YOLO11 가중치(`.pt`)는 `Vision/models/` 폴더 내에 포함되어 있습니다. 기본 실행 스크립트(`start_vision.sh`)는 **`parcel_qr_det.pt`** 를 사용합니다.
 
 | 파일명 | 용도 |
 |---|---|
@@ -483,13 +479,13 @@ sudo apt install libzbar0 -y
 | `parcel_box_baseline.pt` | 박스 감지 baseline 모델 |
 | `parcel_box_conveyor_det.pt` | 컨베이어 환경 박스 감지 모델 |
 | `parcel_box_isaac_det.pt` | Isaac Sim 합성데이터 학습 박스 감지 모델 |
-| `patchcore_memory_bank.pt`, `patchcore_threshold.pt` | PatchCore 이상 탐지용 (현재 미사용) |
+| `patchcore_memory_bank.pt`, `patchcore_threshold.pt` | PatchCore prototype용 (기본 실행 제외) |
 
-별도 다운로드 절차 없이 zip 압축 시 함께 포함되므로, 압축 해제 후 바로 추론 가능합니다.
+가중치 파일은 저장소에 포함되어 있습니다. 추론에는 위 의존성과 ROS 2 빌드 환경이 필요합니다.
 
 ### 4. 영상 압축 변환 (image_transport republish)
 
-Isaac Sim이 발행하는 원본 이미지 토픽(`/rgb`)을 허브가 받을 수 있는 압축 포맷(`/rgb/compressed`)으로 변환해야 합니다. **Vision PC(`vision`)** 에서 `start_vision.sh` 실행 시 자동으로 함께 실행되며, 단독 실행 시에는 다음 명령을 사용합니다.
+USD 카메라 graph가 발행하도록 구성된 원본 이미지 토픽(`/rgb`)을 허브가 받을 수 있는 압축 포맷(`/rgb/compressed`)으로 변환해야 합니다. **Vision PC(`vision`)** 에서 `start_vision.sh` 실행 시 자동으로 함께 실행되며, 단독 실행 시에는 다음 명령을 사용합니다.
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -498,83 +494,86 @@ ros2 run image_transport republish raw \
   --remap in:=/rgb \
   --remap out/compressed:=/rgb/compressed
 ```
+
 - `in:=/rgb`: Isaac Sim ROS2 Bridge가 발행하는 원본 이미지 토픽
 - `out/compressed:=/rgb/compressed`: `parcel_hub_node`가 구독하는 입력 토픽 (`input_topic` 파라미터 기본값과 일치)
 
 ### 5. Isaac Sim ROS2 Bridge 관련
-- `LD_LIBRARY_PATH`는 `isaac_python` alias 안에서만 설정 (전역 `~/.bashrc` 적용 금지 — spdlog 심볼 충돌 방지)
+
+- Dual은 `SimulationApp` 생성 후 Bridge를 활성화하며, standalone profile의 기본 Bridge 설정은 비활성입니다.
+- 기존 환경의 `isaac_python` alias는 저장소에 정의되어 있지 않습니다. 실행 시에는 설치된 Isaac Sim의 `python.sh`를 사용합니다.
+- 기존 환경에서는 spdlog 심볼 충돌을 피하기 위해 Bridge 관련 `LD_LIBRARY_PATH`를 Isaac 실행 환경에 한정했습니다.
 
 ---
 
-## 🔨 빌드 방법
+## 🔨 Vision 빌드 방법
 
-워크스페이스 구조는 다음과 같이 두는 것을 권장합니다.
+저장소의 `Vision/`이 ROS 2 패키지 루트입니다. 아래 예시는 이 디렉터리를 `~/cobot3_ws/src/cobot3`로 복사하거나 심볼릭 링크한 배치를 전제로 합니다. 저장소 자체의 폴더명은 `Vision`으로 유지합니다.
 
 ```text
 cobot3_ws/
 └── src/
-    └── cobot3/
+    └── cobot3/   # Parcel_sorting_IsaacSim/Vision을 가리키는 패키지 경로
 ```
-
-빌드는 워크스페이스 루트에서 실행합니다.
-
-```bash
-cd ~/cobot3_ws
-colcon build --symlink-install
-source install/setup.bash
-```
-
-ROS2 Humble 환경이 적용되지 않은 새 터미널에서는 먼저 다음을 실행합니다.
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/cobot3_ws/install/setup.bash
+cd ~/cobot3_ws
+colcon build --symlink-install --packages-select cobot3
+source install/setup.bash
 ```
+
+`start_vision.sh`는 패키지 위치의 두 단계 상위를 워크스페이스 루트로 계산합니다. 저장소를 임의 경로에 clone한 뒤 `Vision/scripts/start_vision.sh`를 바로 실행하면 `install/setup.bash` 탐색 위치가 맞지 않을 수 있습니다.
 
 ---
 
 ## 🚀 실행 순서 (How to Run)
 
-### 1. (Isaac Sim PC: `IsaacSim05`) Isaac Sim 실행
+다음은 실제 환경 검증을 위한 실행 경로입니다. A/B standalone과 dual은 각각 별도 프로세스로 실행하고, 한 실행을 종료한 뒤 다음 profile을 시작합니다.
 
-먼저 Isaac Sim에서 카메라 토픽(`/rgb`)이 발행되어야 합니다.
+### 1. Isaac Sim: standalone 또는 dual 선택
+
+Isaac Sim 설치 경로와 checkout 경로를 실제 위치로 바꿉니다. dual의 ROS 2 환경과 domain을 먼저 준비합니다.
 
 ```bash
-# Isaac Sim 실행 후 시뮬레이션 씬 로드
-# ROS2 Bridge 활성화 확인
-isaac_python run_ab_dual_robot_ros_gate.py
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=103
+cd /path/to/Parcel_sorting_IsaacSim/isaacsim_dual_robot_palletizing/M0609
+
+# 아래 중 하나를 선택하여 실행
+/path/to/isaac-sim/python.sh robot_a_palletizing_forklift.py
+/path/to/isaac-sim/python.sh robot_b_palletizing_forklift.py
+/path/to/isaac-sim/python.sh run_ab_dual_robot_ros_gate.py
 ```
 
-### 2. (Vision PC: `vision`) 자동 실행 스크립트 사용 — `start_vision.sh`
+카메라 검증은 dual에서 기존 `/World/Graph/ROS_Camera`와 `ROS2CameraHelper`, `/rgb` publisher를 확인합니다. Bridge 활성화 로그만으로 영상 발행 성공을 판단하지 않습니다.
 
-`scripts/start_vision.sh`는 tmux를 이용해 비전 파이프라인 전체를 한 번에 실행합니다.
+### 2. Vision: 자동 실행 스크립트
+
+위 워크스페이스 배치와 빌드를 완료하고 `/rgb` 입력을 준비한 뒤 실행합니다.
 
 ```bash
 cd ~/cobot3_ws/src/cobot3
-chmod +x scripts/start_vision.sh
-./scripts/start_vision.sh
+bash scripts/start_vision.sh
 ```
 
-워크스페이스 경로는 스크립트 위치 기준으로 동적으로 탐색되므로(`cobot3_ws`라는 이름이 아니어도 동작), 별도 경로 수정이 불필요합니다. 실행 전 모델 파일(`models/parcel_qr_det.pt`)과 워크스페이스 빌드 여부(`install/setup.bash`)를 자동으로 검사합니다.
+스크립트는 모델과 `install/setup.bash` 경로를 검사하고 tmux의 `vision` 세션을 구성합니다. 같은 이름의 기존 tmux 세션은 종료합니다. Isaac Sim은 별도로 실행해야 합니다.
 
-실행되는 구성(tmux 패널, staggered delay)은 다음과 같습니다.
+| 순서 | 컴포넌트 | 실행 방식 | 지연 |
+|---|---|---|---|
+| 1 | `image_transport republish` | `ros2 run` | 즉시 |
+| 2 | `parcel_hub_node` | `ros2 run` | 2초 |
+| 3 | `parcel_detector_node` (`parcel_qr_det.pt`) | `ros2 launch` | 4초 |
+| 4 | `qr_decoder_node` | `ros2 run` | 6초 |
+| 5 | `parcel_control_gui` | `ros2 run` | 10초 |
 
-| 순서 | 패널 | 컴포넌트 | 실행 방식 | 지연 |
-|---|---|---|---|---|
-| 1 | 0 | `image_transport republish` | `ros2 run` | 즉시 |
-| 2 | 1 | `parcel_hub_node` | `ros2 run` | 2초 |
-| 3 | 2 | `parcel_detector_node` (`parcel_qr_det.pt`) | `ros2 launch` | 4초 |
-| 4 | 3 | `qr_decoder_node` | `ros2 run` | 6초 |
-| 5 | 4 | `parcel_control_gui` | `ros2 run` | 10초 |
+> tmux 패널 전환: `Ctrl+B → 화살표키`, 세션에서 나가기: `Ctrl+B → D`.
+> 시작 스크립트의 `publish_only_on_change` 인자는 현재 QR decoder에 선언·사용되지 않아, 해당 옵션으로 동작을 제어할 수 없습니다.
 
-기본 `ROS_DOMAIN_ID`는 스크립트 내부에서 `103`으로 설정되어 있습니다. Isaac Sim 또는 다른 ROS2 노드와 통신하려면 동일한 `ROS_DOMAIN_ID`를 사용해야 합니다.
+### 3. Vision: 수동 실행
 
-> tmux 단축키: 패널 전환 `Ctrl+B → 화살표키`, 세션 나가기(백그라운드 유지) `Ctrl+B → D`
-> ⚠️ Isaac Sim은 `start_vision.sh`에 포함되지 않으므로, 위 1단계에서 **별도 터미널(Isaac Sim PC)로 먼저 실행**해야 합니다.
+각 노드는 별도 터미널에서 실행합니다. 터미널마다 환경을 먼저 적용합니다.
 
-### 3. 수동(개별) 실행
-
-각 노드를 직접 실행할 수도 있습니다. 먼저 환경을 source합니다.
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/cobot3_ws/install/setup.bash
@@ -593,237 +592,36 @@ ros2 run cobot3 parcel_hub_node \
   -p output_topic:=/hub/rgb/compressed \
   -p enable_watchdog:=true
 
-# [3/5] parcel_detector_node (launch)
+# [3/5] detector: launch에서 target_class_ids=[0, 1] 지정
 ros2 launch cobot3 parcel_detector.launch.py \
   model_path:=$(ros2 pkg prefix cobot3)/share/cobot3/models/parcel_qr_det.pt \
   rgb_topic:=/hub/rgb/compressed
 
 # [4/5] qr_decoder_node
 ros2 run cobot3 qr_decoder_node \
-  --ros-args \
-  -p rgb_topic:=/hub/rgb/compressed \
-  -p publish_only_on_change:=false
+  --ros-args -p rgb_topic:=/hub/rgb/compressed
 
 # [5/5] GUI
 ros2 run cobot3 parcel_control_gui
 ```
 
-> ⚠️ `qr_decoder_node` 실행 시 `-p publish_only_on_change:=false` 파라미터를 사용하는데, 코드 리뷰 결과 `qr_decoder_node.py`에 이 파라미터를 `declare_parameter`하는 부분이 확인되지 않았습니다. 코드 버전 불일치 가능성이 있으니, 실행 시 "unknown parameter" 경고가 뜨는지 확인 권장.
-
-### 트러블슈팅 참고
-- LAN/DDS 통신 관련 트러블슈팅은 위 "의존성 → 0. PC 간 LAN 통신 설정" 섹션 참고
+Detector를 launch 없이 직접 실행하면 기본 모델은 `yolo11n.pt`, 클래스 ID는 `[28]`입니다. 위 launch는 포함된 `parcel_qr_det.pt`와 `[0, 1]`을 사용합니다. launch의 기본 영상 입력은 `/rgb/compressed`이며, 위 명령과 시작 스크립트는 `/hub/rgb/compressed`를 명시합니다.
 
 ---
 
-## 🦾 로봇팔 연동 방향 (별도 파트)
+## 🔭 남은 통합 및 검증 과제
 
-`cobot3` 패키지는 카메라 영상에서 QR 값을 읽어 `/qr_code` 토픽으로 ZONE 결과를 발행합니다. 예상 데이터 예시는 다음과 같습니다.
+현재 코드에서 확인한 연결 상태입니다. 아래 항목은 리팩터링으로 새로 완성된 기능에 포함하지 않습니다.
 
-```text
-ZONE_A
-ZONE_B
-ZONE_C
-ZONE_D
-ZONE_E
-```
-
-로봇팔 제어 파트는 이 `/qr_code` 값을 구독한 뒤, 각 ZONE에 대응되는 목표 좌표로 M0609 로봇팔을 이동시키고 VGC10 흡착 그리퍼로 박스를 집어 분류하는 방식으로 연결할 수 있습니다.
-
-```text
-cobot3 비전 패키지                       M0609 로봇팔 제어 파트
-  - 카메라 영상 수신                       - /qr_code 구독
-  - 택배 박스 / QR 라벨 감지        ──►     - ZONE별 목표 위치 선택
-  - QR 디코딩                              - VGC10 흡착
-  - /qr_code 발행                          - 박스 이동 → 흡착 해제
-```
-
-예시 목표 좌표 구조 (개념 코드):
-```python
-ZONE_TARGETS = {
-    "ZONE_A": (0.32,  0.25, 0.10),
-    "ZONE_B": (0.32,  0.10, 0.10),
-    "ZONE_C": (0.32,  0.00, 0.10),
-    "ZONE_D": (0.32, -0.10, 0.10),
-    "ZONE_E": (0.32, -0.25, 0.10),
-}
-```
-
-연동 흐름:
-```text
-1. cobot3가 QR을 인식한다.
-2. qr_decoder_node가 /qr_code로 ZONE 값을 발행한다.
-3. 로봇팔 제어 노드가 /qr_code를 구독한다.
-4. ZONE 값에 따라 목표 좌표를 선택한다.
-5. M0609가 박스 위치로 이동한다.
-6. VGC10 흡착 그리퍼가 박스를 흡착한다.
-7. 목표 ZONE 위치로 이동한다.
-8. 흡착을 해제하고 다음 박스를 대기한다.
-```
-
-기존 M0609 / VGC10 / Isaac Sim 파일과 연결할 때 맞춰야 할 항목:
-
-| 항목 | 설명 |
+| 항목 | 현재 상태 / 필요한 작업 |
 |---|---|
-| 카메라 토픽 | Isaac Sim에서 `/rgb` 또는 지정된 카메라 토픽 발행 |
-| QR 결과 토픽 | `cobot3`에서 `/qr_code` 발행 |
-| 로봇 제어 입력 | 로봇팔 노드에서 `/qr_code` 구독 |
-| 목표 좌표 | `ZONE_A` ~ `ZONE_E`별 적재 또는 분류 위치 |
-| 그리퍼 동작 | VGC10 또는 Surface Gripper 흡착 on/off |
-| USD 환경 | 컨베이어, 박스, 카메라, M0609, VGC10 prim 경로 일치 |
+| GUI → detector/hub 명령 | GUI의 `/detection_enable`, `/yolo_conf_threshold`와 수신 측 `/cmd/detection_enable`, `/cmd/conf_threshold`가 다름. 토픽 통일 또는 remap 필요 |
+| `/parcel_no_label` | detector는 `std_msgs/String`, GUI는 `sensor_msgs/CompressedImage`. 타입/표시 경로 정리 필요 |
+| QR enable | `/cmd/qr_enable`이 상태값만 바꾸며 실제 decode 처리 중단에는 미반영 |
+| `/qr_code` → gate | QR 문자열을 시뮬레이터 측 `/tmp/zone_command.txt`의 `A`/`B`로 변환하는 bridge/writer 미구현. 현재 gate는 두 구역을 처리하며 A~E 자동 분류가 아님 |
+| GUI → simulation | 정지·reset·simulation control 발행 UI는 있으나 대응 consumer와 `/state/simulation` publisher가 저장소 Python에 없음 |
+| Gate / box timing | 연속 같은 zone은 다른 zone/reset 전까지 중복으로 처리. gate countdown은 pause 중 멈추지만 box schedule은 wall time 사용. 실제 동작 확인 필요 |
+| PatchCore | 별도 prototype. 기본 pipeline 통합과 이상 탐지 성능 평가 필요 |
+| 전체 runtime | FixedJoint/PhysX, RMPFlow, USD 구성, A/B 간 timing, forklift, ROS camera/QoS, 정상·오류 종료를 smoke checklist에 따라 검증 필요 |
 
-따라서 `cobot3`는 **로봇팔을 직접 움직이는 패키지라기보다는 로봇팔 분류 동작을 위한 비전 판단 결과를 제공하는 패키지**입니다.
-
----
-
-## ⚠️ 현재 확인된 주의사항
-
-### 1. GUI 제어 토픽 이름 불일치 (확인 필요)
-
-`parcel_control_gui.py` 코드 일부는 다음 토픽을 사용합니다.
-```text
-/detection_enable
-/yolo_conf_threshold
-```
-하지만 detector와 hub는 다음 토픽을 사용합니다.
-```text
-/cmd/detection_enable
-/cmd/conf_threshold
-```
-GUI에서 detection on/off나 confidence threshold 조절이 실제 detector에 반영되지 않는다면, GUI의 토픽명을 `/cmd/...` 형식으로 맞춰야 합니다.
-
-권장 수정 방향:
-```python
-CONF_TOPIC = "/cmd/conf_threshold"
-DETECT_EN_TOPIC = "/cmd/detection_enable"
-```
-
-### 2. `/parcel_no_label` 타입 확인 필요
-
-`parcel_detector_node.py`는 `/parcel_no_label`을 `std_msgs/String`(`"NO_LABEL"`)으로 발행합니다. 반면 GUI 코드에서는 이 토픽을 이미지 토픽처럼 처리하는 부분이 있어 실행 시 타입 불일치가 발생할 수 있습니다. GUI에서 이 토픽을 사용할 경우 `std_msgs/String` 기준으로 맞추는 것이 안전합니다.
-
-### 3. QR enable 동작 확인 필요
-
-`qr_decoder_node.py`에는 `/cmd/qr_enable` 구독자가 있지만, 실제 QR 처리 콜백에서 `_enabled` 상태값을 기준으로 처리 차단이 완전히 적용되어 있는지 확인이 필요합니다.
-
-### 4. `package.xml` 의존성 누락
-
-위 "📦 의존성 → 2-d) `package.xml` 의존성 보강 필요" 참고.
-
-### 5. YOLO 모델 경로 / 클래스 ID 기본값
-
-`parcel_detector_node.py`의 `model_path` 파라미터 기본값은 `yolo11n.pt`(범용 COCO 모델)이며, `target_class_ids` 기본값도 `[28]`(COCO `suitcase`)로 되어 있어 커스텀 학습 모델(`parcel_qr_det.pt` 등) 사용 전 임시 설정입니다. 실제 실행 시(launch/스크립트에서) `model_path`를 올바른 `.pt`로, 클래스 ID를 `package`/`qr_label`에 맞게 지정하는지 확인이 필요합니다.
-
----
-
-## 📝 기타 비고
-- 게이트 제어는 `/simulation_control` 토픽이 아닌 **컨베이어 커터(물리적 게이트)** 로 수행됩니다.
-- FastAPI, `/sort_cmd` 토픽은 현재 미사용입니다.
-- ArUco 마커는 구현/테스트되지 않았습니다 (개념 검토만 진행).
-- `cobot3/cobot3/listener.py`, `talker.py`는 ROS2 기본 예제 잔재 파일로 보입니다 — 실제 사용 여부 확인 후 미사용이면 제출 전 삭제 권장.
-
----
-
-## 🗂️ Git 업로드 시 제외 권장 파일
-
-다음 파일들은 용량이 크거나 개인 PC 환경에 종속적이므로 Git에 올리지 않는 것을 권장합니다.
-
-```text
-.vscode/browse.vc.db
-**/.vscode/browse.vc.db
-__pycache__/
-*.pyc
-build/
-install/
-log/
-parcel_captures/
-```
-
-특히 `.vscode/browse.vc.db`는 VSCode가 자동 생성하는 인덱스 캐시 파일이므로 프로젝트 실행에 필요하지 않습니다.
-
-### 예시 `.gitignore`
-```gitignore
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-
-# ROS2 build outputs
-build/
-install/
-log/
-
-# VSCode cache
-.vscode/browse.vc.db
-**/.vscode/browse.vc.db
-.vscode/ipch/
-**/.vscode/ipch/
-
-# Local captures
-parcel_captures/
-```
-
-> 제출 가이드라인 기준으로는, `build`/`install`/`log` 폴더를 삭제한 뒤 **`src` 폴더가 포함된 워크스페이스 전체**를 압축해 제출합니다. `cobot3_ws/src/basic/`(개인 실습 코드)도 함께 제외합니다.
-
----
-
-## 🔭 향후 개선 방향
-- GUI 제어 토픽을 `/cmd/...` 형식으로 통일
-- `/parcel_no_label` 토픽 타입 정리
-- QR enable/disable 명령의 실제 처리 반영
-- M0609 로봇팔 제어 노드와 `/qr_code` 연동
-- `ZONE_A` ~ `ZONE_E`별 목표 좌표 및 적재 알고리즘 정리
-- VGC10 흡착 성공 여부를 상태 토픽으로 발행
-- 송장 미부착 또는 QR 인식 실패 박스의 예외 처리 구역 추가
-- PatchCore 이상 감지 노드를 기본 파이프라인에 선택적으로 통합
-- `package.xml`에 실제 실행 의존성 보강
-
----
-
-## 핵심 요약
-
-`cobot3`는 택배 분류 시스템에서 비전 인식과 QR 판독을 담당하는 ROS2 패키지입니다. Vision PC(`vision`)와 Isaac Sim PC(`IsaacSim05`)가 유선 LAN으로 연결된 분산 환경에서, 카메라 영상으로부터 택배 박스와 QR 라벨을 감지하고 QR 값을 `/qr_code`로 발행합니다. 이 결과를 M0609 로봇팔 제어 노드가 구독하면, VGC10 흡착 그리퍼를 이용해 박스를 ZONE별로 분류하는 전체 자동화 시스템으로 확장할 수 있습니다.
-
----
-
-## M0609 palletizing 코드 구조
-
-`isaacsim_dual_robot_palletizing/M0609`의 A/B 로봇은 같은 common core를 사용합니다. 세 entrypoint는 먼저 `SimulationApp`을 만든 뒤 Isaac 의존 모듈을 import하도록 구성되어 있습니다. `palletizing.config`만 단독 import하는 것은 SimulationApp/World 생성이나 Stage 변경을 일으키지 않습니다.
-
-```text
-M0609/
-├── robot_a_palletizing_forklift.py   # A standalone lifecycle
-├── robot_b_palletizing_forklift.py   # B standalone lifecycle
-├── run_ab_dual_robot_ros_gate.py     # A+B shared World, ROS2, gate
-└── palletizing/
-    ├── config.py       # A/B standalone/dual RobotCellConfig
-    ├── settings.py     # 공통 threshold, timing, 좌표/관절 motion 값
-    ├── scene.py        # USD prim/transform/bbox와 VGC10 visual/suction
-    ├── diagnostics.py  # physics/pose/bbox/yaw 진단과 안전 로그
-    ├── physics.py      # rigid body/collision/FixedJoint 제어
-    ├── palletizing.py  # detector, slot/goal, task, carry 계산
-    ├── forklift.py     # B home-return 병렬 pallet lowering policy
-    ├── worker.py       # cell별 독립 runtime state와 공통 실행 흐름
-    └── bootstrap.py    # standalone app/world/reset/close lifecycle
-```
-
-### Robot A/B 차이
-
-- A: `/World/m0609_A`, `OriBoxA_*`, `pick_ready_zone_A`, `APalt_slot_*`를 사용합니다. A standalone은 lower/settle 중 fused RMPFlow yaw 보정을 유지합니다.
-- B: `/World/m0609_B`, `OriBoxB_*`, `pick_ready_zone_B`, `BPalt_slot_*`를 사용합니다. B standalone은 반복 slot marker fallback 최종 이동과 두 번째 release 후 home return 중 BPalt lowering을 유지합니다.
-- Dual: A/B가 각각 독립 `PalletizingWorker` 상태를 가지며 두 task를 먼저 등록한 후 master가 `World.reset()`을 한 번만 호출합니다. A는 두 상자 후 APalt virtual forklift를 실행하고 B는 두 slot stack까지만 수행합니다.
-
-`A_STANDALONE_CONFIG`, `B_STANDALONE_CONFIG`, `A_DUAL_CONFIG`, `B_DUAL_CONFIG`에는 실제 cell/profile별 차이만 들어 있습니다. 공통 흡착 threshold, joint angle, velocity, clearance, event timing은 `settings.py`에 기존 값 그대로 유지되어 있습니다.
-
-### 실행 흐름
-
-- A standalone: Isaac Sim Python으로 `robot_a_palletizing_forklift.py`를 실행합니다. entrypoint가 app을 소유하고 A config로 World 생성, task 등록, 한 번 reset, worker loop, app close를 수행합니다.
-- B standalone: 동일하게 `robot_b_palletizing_forklift.py`를 실행하며 B config/strategy를 사용합니다.
-- Dual A+B: `run_ab_dual_robot_ros_gate.py`를 실행합니다. wrapper가 ROS2 Bridge를 활성화한 후 shared World와 두 worker를 만들며, 일반 루프의 world step과 app close를 담당합니다. 원본에서 유지한 worker 초기화·release 관찰 루프에도 shared World를 추가로 step하는 구간이 있습니다.
-
-Dual wrapper는 더 이상 A/B Python 전체 소스를 문자열로 포함하거나 `exec(compile(...))`로 실행하지 않습니다. Camera/ROS2 topic 이름과 Vision 알고리즘은 이번 구조 변경에서 수정하지 않았습니다. 실제 Isaac Sim 확인 절차는 [`ISAAC_SIM_SMOKE_TEST.md`](docs/ISAAC_SIM_SMOKE_TEST.md), 상세 분석과 보존 판단은 [`REFACTOR_ANALYSIS.md`](docs/development/REFACTOR_ANALYSIS.md)를 참고하세요.
-
-`08f0d16^`와 `08f0d16`을 비교한 후속 검수 결과 및 최소 회귀 수정은 [`ASTRA_REVIEW_REPORT.md`](docs/development/ASTRA_REVIEW_REPORT.md)에 기록되어 있습니다. 정적 검사와 모의 World 테스트는 실제 Isaac Sim 동작 검증을 대신하지 않습니다.
-
----
-
-*본 문서는 제출 가이드라인 기준 임시 통합 작성본입니다. 최종 제출 전 PC 사양, PyTorch/CUDA 설치 명령어, 토픽 불일치 항목, package.xml 의존성을 검증 및 보완해 주세요.*
+추가 개선 방향은 QR 기반 구역 연결, 미검출/판독 실패 박스의 물리적 예외 처리, 흡착 성공 상태 발행, Vision 의존성 버전 고정입니다. 실기 로봇 연동 및 sim-to-real 검증은 현재 구현·검증 범위 밖입니다.

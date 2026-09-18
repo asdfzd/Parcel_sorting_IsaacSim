@@ -1,7 +1,7 @@
 # M0609 Palletizing Refactor Analysis
 
 > Historical Sol refactor notes. The follow-up audit in
-> [ASTRA_REVIEW_REPORT.md](ASTRA_REVIEW_REPORT.md) uses the actual Git baseline
+> [REGRESSION_REVIEW_REPORT.md](REGRESSION_REVIEW_REPORT.md) uses the actual Git baseline
 > `08f0d16^` → `08f0d16`. It supersedes the isolation claim below: sequential
 > worker stepping alone did not cover World's deferred task scene setup or
 > callback reentry. The audit adds scoped task contexts and regression tests.
