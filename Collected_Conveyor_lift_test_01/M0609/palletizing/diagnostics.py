@@ -448,7 +448,7 @@ def scan_stage_joints(stage, box_root_path, label="scan"):
                     box_root_path in joined
                     or "/OriBox" in joined
                     or "vgc10" in joined.lower()
-                    or "m0609_A" in joined
+                    or ACTIVE_ROBOT_ROOT_PATH in joined
                     or path == str(PHYSICS_ATTACH_JOINT_PATH)
                 )
                 if relevant:

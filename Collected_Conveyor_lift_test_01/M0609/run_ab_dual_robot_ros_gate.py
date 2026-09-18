@@ -24,6 +24,7 @@ from pxr import Gf, UsdGeom, UsdPhysics
 from isaacsim.core.api import World
 
 from palletizing.config import A_DUAL_CONFIG, B_DUAL_CONFIG
+from palletizing.bootstrap import configure_runtime_logging
 from palletizing.worker import create_worker
 
 
@@ -299,7 +300,8 @@ class BoxPhysicsSequencer:
             self.next_index += 1
 
 
-def main():
+def _run_shared_world():
+    configure_runtime_logging()
     shared_world = World(stage_units_in_meters=1.0)
     workers = [
         ["A", create_worker(A_DUAL_CONFIG, shared_world, simulation_app), True],
@@ -321,7 +323,6 @@ def main():
     except Exception as error:
         print(f"[DUAL][SHARED_RESET_ERROR] {type(error).__name__}: {error}")
         traceback.print_exc()
-        simulation_app.close()
         return
 
     stage = omni.usd.get_context().get_stage()
@@ -381,8 +382,13 @@ def main():
                 row[2] = _safe_next(row[0], row[1], phase="loop")
         time.sleep(0.01)
 
-    print("[DUAL] closing shared SimulationApp")
-    simulation_app.close()
+
+def main():
+    try:
+        _run_shared_world()
+    finally:
+        print("[DUAL] closing shared SimulationApp")
+        simulation_app.close()
 
 
 if __name__ == "__main__":

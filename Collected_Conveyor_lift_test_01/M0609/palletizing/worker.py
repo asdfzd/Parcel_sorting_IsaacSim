@@ -4,6 +4,7 @@ This module must only be imported after ``SimulationApp`` has been created.
 """
 
 from pathlib import Path
+from contextlib import contextmanager
 import math
 import sys
 import time
@@ -134,6 +135,7 @@ def _capture_worker_context(worker):
         ("_POSE_TRACK_STATE", _physics_module),
         ("_PHYSICS_JOINT_DIAG_STATE", _physics_module),
         ("_LAST_SUCTION_GRID_INFO", _scene_module),
+        ("_SUCTION_GRID_EVALUATION_COUNT", _scene_module),
         ("ROBOT_INITIAL_JOINTS_156", _palletizing_module),
     ):
         if name in module.__dict__:
@@ -143,9 +145,39 @@ def _capture_worker_context(worker):
             worker._overrides[name] = _palletizing_module.__dict__[name]
 
 
-def _worker_loop(shared_world, config):
+class _WorkerTask(M0609ConveyorBoxTask):
+    """Keep World-driven callbacks in the task owner's legacy helper context."""
+
+    def __init__(self, name, worker):
+        self._worker = worker
+        super().__init__(name=name)
+
+    def set_up_scene(self, scene):
+        with self._worker.context():
+            return super().set_up_scene(scene)
+
+    def _load_usd(self):
+        super()._load_usd()
+        # Propagate discovered paths before scene/physics setup uses them.
+        _capture_worker_context(self._worker)
+        _apply_worker_context(self._worker)
+
+    def get_observations(self):
+        with self._worker.context():
+            return super().get_observations()
+
+    def pre_step(self, control_index, simulation_time):
+        with self._worker.context():
+            return super().pre_step(control_index, simulation_time)
+
+    def post_reset(self):
+        with self._worker.context():
+            return super().post_reset()
+
+
+def _worker_loop(shared_world, config, worker):
     my_world = shared_world
-    task = M0609ConveyorBoxTask(name=config.task_name)
+    task = _WorkerTask(name=config.task_name, worker=worker)
     my_world.add_task(task)
     # The lifecycle owner resets only after every worker has registered its task.
     yield
@@ -3414,18 +3446,38 @@ class PalletizingWorker:
                 "summary": "not_evaluated",
             },
             "ROBOT_INITIAL_JOINTS_156": None,
+            "_SUCTION_GRID_EVALUATION_COUNT": 0,
         }
-        self._generator = _worker_loop(shared_world, config)
+        self._generator = _worker_loop(shared_world, config, self)
 
     def __iter__(self):
         return self
 
     def __next__(self):
+        with self.context():
+            return next(self._generator)
+
+    @contextmanager
+    def context(self):
+        """Restore the caller's context after nested World callbacks or errors.
+
+        This is for sequential/reentrant Isaac callbacks, not Python threads.
+        """
+        names = self._overrides.keys() | self._state.keys()
+        missing = object()
+        namespaces = [module.__dict__ for module in _RUNTIME_MODULES] + [globals()]
+        saved = [{name: namespace.get(name, missing) for name in names} for namespace in namespaces]
         _apply_worker_context(self)
         try:
-            return next(self._generator)
+            yield
         finally:
             _capture_worker_context(self)
+            for namespace, values in zip(namespaces, saved):
+                for name, value in values.items():
+                    if value is missing:
+                        namespace.pop(name, None)
+                    else:
+                        namespace[name] = value
 
     def activate(self) -> None:
         """Activate this cell before calling shared helpers outside the worker loop."""
@@ -3436,8 +3488,7 @@ class PalletizingWorker:
         return self.shared_world.scene.get_object(self.config.robot_object_name)
 
     def ensure_vgc10(self, stage) -> bool:
-        self.activate()
-        try:
+        with self.context():
             attach_vgc10_to_link6(stage)
             robot = self.robot
             if robot is not None:
@@ -3446,16 +3497,11 @@ class PalletizingWorker:
             root_ok = stage.GetPrimAtPath(self.config.vgc10_root_path).IsValid()
             suction_ok = stage.GetPrimAtPath(self.config.vgc10_suction_point_path).IsValid()
             return bool(root_ok and suction_ok)
-        finally:
-            _capture_worker_context(self)
 
     def update_vgc10(self):
-        self.activate()
-        try:
+        with self.context():
             robot = self.robot
             return update_vgc10_suction_anchor(robot) if robot is not None else None
-        finally:
-            _capture_worker_context(self)
 
 
 def create_worker(config: RobotCellConfig, shared_world, simulation_app) -> PalletizingWorker:

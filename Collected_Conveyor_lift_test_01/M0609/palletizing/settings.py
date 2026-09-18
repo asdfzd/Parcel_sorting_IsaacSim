@@ -14,6 +14,7 @@ _THIS_DIR = Path(__file__).resolve().parent.parent
 
 # Replaced with the owning entrypoint's instance before any runtime helper runs.
 simulation_app = None
+SUPPRESS_NON_CRITICAL_KIT_WARNINGS_122 = True
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  A. Task 파라미터                                             ║

@@ -26,6 +26,7 @@ except Exception:
 from .settings import *
 
 _LAST_SUCTION_GRID_INFO = {"attach_center": None, "hits": [], "summary": "not_evaluated"}
+_SUCTION_GRID_EVALUATION_COUNT = 0
 
 
 def set_subtree_collision_enabled(stage, root_path: str, enabled: bool) -> int:
@@ -1296,14 +1297,16 @@ def evaluate_suction_grid_on_box_top(stage, bbox_info, event=None, verbose=False
     - 중심 흡착점 z가 실제 box_top_z 근처여야 함
     - attach_center는 항상 실제 박스 윗면 z + eps로 투영
     """
-    global _LAST_SUCTION_GRID_INFO
+    global _SUCTION_GRID_EVALUATION_COUNT
     if bbox_info is None:
-        _LAST_SUCTION_GRID_INFO = {"attach_center": None, "hits": [], "summary": "no_bbox"}
+        _LAST_SUCTION_GRID_INFO.clear()
+        _LAST_SUCTION_GRID_INFO.update(attach_center=None, hits=[], summary="no_bbox")
         return False, "center_no_bbox", _LAST_SUCTION_GRID_INFO
 
     pos = get_world_translation(stage, VGC10_SUCTION_POINT_PATH)
     if pos is None:
-        _LAST_SUCTION_GRID_INFO = {"attach_center": None, "hits": [], "summary": "no_center_suction_point"}
+        _LAST_SUCTION_GRID_INFO.clear()
+        _LAST_SUCTION_GRID_INFO.update(attach_center=None, hits=[], summary="no_center_suction_point")
         return False, "center_no_suction_point", _LAST_SUCTION_GRID_INFO
 
     top_center = np.array(bbox_info["top_center"], dtype=float)
@@ -1359,7 +1362,9 @@ def evaluate_suction_grid_on_box_top(stage, bbox_info, event=None, verbose=False
         f"p_center:hit={int(ok)},dx={dx:+.3f},dy={dy:+.3f},xy={xy_err:.3f},zgap={z_gap:+.3f},radius={CENTER_SUCTION_EFFECTIVE_RADIUS_XY:.3f}"
     ]
 
-    _LAST_SUCTION_GRID_INFO = {
+    # Attach callers must see this evaluation within the same worker step.
+    _LAST_SUCTION_GRID_INFO.clear()
+    _LAST_SUCTION_GRID_INFO.update({
         "attach_center": attach_center,
         "hits": hit_infos,
         "hit_count": 1 if ok else 0,
@@ -1367,13 +1372,10 @@ def evaluate_suction_grid_on_box_top(stage, bbox_info, event=None, verbose=False
         "summary": summary,
         "point_logs": point_logs,
         "ok": ok,
-    }
+    })
 
-    try:
-        evaluate_suction_grid_on_box_top._counter += 1
-    except Exception:
-        evaluate_suction_grid_on_box_top._counter = 1
-    counter = int(evaluate_suction_grid_on_box_top._counter)
+    _SUCTION_GRID_EVALUATION_COUNT += 1
+    counter = _SUCTION_GRID_EVALUATION_COUNT
     do_log = bool(verbose or ok or SUCTION_GRID_LOG_EVERY_STEP or counter % int(max(1, CENTER_SUCTION_LOG_INTERVAL)) == 0)
     if do_log:
         print(f"  [CENTER_SUCTION] event={event}, {summary}")
