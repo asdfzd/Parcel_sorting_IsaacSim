@@ -1,0 +1,44 @@
+"""Lifecycle helpers imported only after an Isaac Sim ``SimulationApp`` exists."""
+
+from __future__ import annotations
+
+import time
+
+from .config import RobotCellConfig
+
+
+def enable_requested_extensions(config: RobotCellConfig, simulation_app) -> None:
+    """Preserve the original extension-before-World import/update ordering."""
+    if config.enable_ros2_bridge:
+        from isaacsim.core.utils.extensions import enable_extension
+
+        enable_extension("isaacsim.ros2.bridge")
+    simulation_app.update()
+
+
+def run_standalone(config: RobotCellConfig, simulation_app) -> None:
+    """Own one app, one world, one reset, and one configured cell worker."""
+    enable_requested_extensions(config, simulation_app)
+
+    # These imports intentionally occur after SimulationApp creation and extension setup.
+    from isaacsim.core.api import World
+
+    from .worker import create_worker
+
+    world = World(stage_units_in_meters=1.0)
+    worker = create_worker(config=config, shared_world=world, simulation_app=simulation_app)
+    try:
+        next(worker)  # register task only
+        world.reset()
+        next(worker)  # post-reset initialization and first cooperative frame
+        while simulation_app.is_running():
+            world.step(render=True)
+            next(worker)
+            time.sleep(0.01)
+    except StopIteration:
+        print(f"[PALLETIZING][{config.profile_name}] worker stopped")
+    finally:
+        simulation_app.close()
+
+
+__all__ = ["enable_requested_extensions", "run_standalone"]

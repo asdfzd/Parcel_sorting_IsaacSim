@@ -785,4 +785,43 @@ parcel_captures/
 
 ---
 
+## M0609 palletizing 코드 구조
+
+`Collected_Conveyor_lift_test_01/M0609`의 A/B 로봇은 같은 common core를 사용합니다. 세 entrypoint는 먼저 `SimulationApp`을 만든 뒤 Isaac 의존 모듈을 import하도록 구성되어 있습니다. `palletizing.config`만 단독 import하는 것은 SimulationApp/World 생성이나 Stage 변경을 일으키지 않습니다.
+
+```text
+M0609/
+├── robot_a_palletizing_forklift.py   # A standalone lifecycle
+├── robot_b_palletizing_forklift.py   # B standalone lifecycle
+├── run_ab_dual_robot_ros_gate.py     # A+B shared World, ROS2, gate
+└── palletizing/
+    ├── config.py       # A/B standalone/dual RobotCellConfig
+    ├── settings.py     # 공통 threshold, timing, 좌표/관절 motion 값
+    ├── scene.py        # USD prim/transform/bbox와 VGC10 visual/suction
+    ├── diagnostics.py  # physics/pose/bbox/yaw 진단과 안전 로그
+    ├── physics.py      # rigid body/collision/FixedJoint 제어
+    ├── palletizing.py  # detector, slot/goal, task, carry 계산
+    ├── forklift.py     # B home-return 병렬 pallet lowering policy
+    ├── worker.py       # cell별 독립 runtime state와 공통 실행 흐름
+    └── bootstrap.py    # standalone app/world/reset/close lifecycle
+```
+
+### Robot A/B 차이
+
+- A: `/World/m0609_A`, `OriBoxA_*`, `pick_ready_zone_A`, `APalt_slot_*`를 사용합니다. A standalone은 lower/settle 중 fused RMPFlow yaw 보정을 유지합니다.
+- B: `/World/m0609_B`, `OriBoxB_*`, `pick_ready_zone_B`, `BPalt_slot_*`를 사용합니다. B standalone은 반복 slot marker fallback 최종 이동과 두 번째 release 후 home return 중 BPalt lowering을 유지합니다.
+- Dual: A/B가 각각 독립 `PalletizingWorker` 상태를 가지며 두 task를 먼저 등록한 후 master가 `World.reset()`을 한 번만 호출합니다. A는 두 상자 후 APalt virtual forklift를 실행하고 B는 두 slot stack까지만 수행합니다.
+
+`A_STANDALONE_CONFIG`, `B_STANDALONE_CONFIG`, `A_DUAL_CONFIG`, `B_DUAL_CONFIG`에는 실제 cell/profile별 차이만 들어 있습니다. 공통 흡착 threshold, joint angle, velocity, clearance, event timing은 `settings.py`에 기존 값 그대로 유지되어 있습니다.
+
+### 실행 흐름
+
+- A standalone: Isaac Sim Python으로 `robot_a_palletizing_forklift.py`를 실행합니다. entrypoint가 app을 소유하고 A config로 World 생성, task 등록, 한 번 reset, worker loop, app close를 수행합니다.
+- B standalone: 동일하게 `robot_b_palletizing_forklift.py`를 실행하며 B config/strategy를 사용합니다.
+- Dual A+B: `run_ab_dual_robot_ros_gate.py`를 실행합니다. wrapper가 ROS2 Bridge를 활성화한 후 shared World와 두 worker를 만들며, world step과 app close도 wrapper만 담당합니다.
+
+Dual wrapper는 더 이상 A/B Python 전체 소스를 문자열로 포함하거나 `exec(compile(...))`로 실행하지 않습니다. Camera/ROS2 topic 이름과 Vision 알고리즘은 이번 구조 변경에서 수정하지 않았습니다. 실제 Isaac Sim 확인 절차는 [`ISAAC_SIM_SMOKE_TEST.md`](ISAAC_SIM_SMOKE_TEST.md), 상세 분석과 보존 판단은 [`REFACTOR_ANALYSIS.md`](REFACTOR_ANALYSIS.md)를 참고하세요.
+
+---
+
 *본 문서는 제출 가이드라인 기준 임시 통합 작성본입니다. 최종 제출 전 PC 사양, PyTorch/CUDA 설치 명령어, 토픽 불일치 항목, package.xml 의존성을 검증 및 보완해 주세요.*
