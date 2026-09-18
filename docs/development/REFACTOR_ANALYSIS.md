@@ -12,7 +12,7 @@ This analysis was made before changing the runtime implementation. The workspace
 
 The repository contains two runtime areas:
 
-- `Collected_Conveyor_lift_test_01/M0609`: Isaac Sim M0609 palletizing, RMPFlow configuration/controllers, robot/gripper assets, and the dual-cell wrapper.
+- `isaacsim_dual_robot_palletizing/M0609`: Isaac Sim M0609 palletizing, RMPFlow configuration/controllers, robot/gripper assets, and the dual-cell wrapper.
 - `Vision`: a ROS 2 Python package containing the YOLO parcel detector, QR decoder, central hub, PatchCore anomaly node, PyQt control GUI, launch file, models, and package metadata.
 
 The non-Python Isaac tree is predominantly simulation data: 56 USD files, 6 URDF files, 35 DAE meshes, 24 STL meshes, 172 PNG textures, 32 MDL materials, and collected asset mappings. The only M0609 Python dependencies outside the three target scripts are:

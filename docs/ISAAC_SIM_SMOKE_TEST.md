@@ -1,9 +1,9 @@
 # Isaac Sim M0609 Smoke Test
 
-These checks require the real Isaac Sim/PhysX/ROS 2 environment. They were not run in the refactoring workspace. Run the scripts from `Collected_Conveyor_lift_test_01/M0609` so relative RMPFlow and asset paths resolve as documented.
+These checks require the real Isaac Sim/PhysX/ROS 2 environment. They were not run in the refactoring workspace. Run the scripts from `isaacsim_dual_robot_palletizing/M0609` so relative RMPFlow and asset paths resolve as documented.
 
 Audit baseline: original `08f0d16^`, Sol refactor `08f0d16`; see
-[ASTRA_REVIEW_REPORT.md](ASTRA_REVIEW_REPORT.md). All rows below remain
+[ASTRA_REVIEW_REPORT.md](development/ASTRA_REVIEW_REPORT.md). All rows below remain
 `NEEDS_ISAAC_SIM_TEST`. NumPy/World-double tests do not validate PhysX or ROS.
 Standalone profiles leave ROS2 Bridge disabled, as in the original; the dual
 runner enables it. Profile-name strings are not normal startup success logs;

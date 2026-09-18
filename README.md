@@ -787,7 +787,7 @@ parcel_captures/
 
 ## M0609 palletizing 코드 구조
 
-`Collected_Conveyor_lift_test_01/M0609`의 A/B 로봇은 같은 common core를 사용합니다. 세 entrypoint는 먼저 `SimulationApp`을 만든 뒤 Isaac 의존 모듈을 import하도록 구성되어 있습니다. `palletizing.config`만 단독 import하는 것은 SimulationApp/World 생성이나 Stage 변경을 일으키지 않습니다.
+`isaacsim_dual_robot_palletizing/M0609`의 A/B 로봇은 같은 common core를 사용합니다. 세 entrypoint는 먼저 `SimulationApp`을 만든 뒤 Isaac 의존 모듈을 import하도록 구성되어 있습니다. `palletizing.config`만 단독 import하는 것은 SimulationApp/World 생성이나 Stage 변경을 일으키지 않습니다.
 
 ```text
 M0609/
@@ -820,9 +820,9 @@ M0609/
 - B standalone: 동일하게 `robot_b_palletizing_forklift.py`를 실행하며 B config/strategy를 사용합니다.
 - Dual A+B: `run_ab_dual_robot_ros_gate.py`를 실행합니다. wrapper가 ROS2 Bridge를 활성화한 후 shared World와 두 worker를 만들며, 일반 루프의 world step과 app close를 담당합니다. 원본에서 유지한 worker 초기화·release 관찰 루프에도 shared World를 추가로 step하는 구간이 있습니다.
 
-Dual wrapper는 더 이상 A/B Python 전체 소스를 문자열로 포함하거나 `exec(compile(...))`로 실행하지 않습니다. Camera/ROS2 topic 이름과 Vision 알고리즘은 이번 구조 변경에서 수정하지 않았습니다. 실제 Isaac Sim 확인 절차는 [`ISAAC_SIM_SMOKE_TEST.md`](ISAAC_SIM_SMOKE_TEST.md), 상세 분석과 보존 판단은 [`REFACTOR_ANALYSIS.md`](REFACTOR_ANALYSIS.md)를 참고하세요.
+Dual wrapper는 더 이상 A/B Python 전체 소스를 문자열로 포함하거나 `exec(compile(...))`로 실행하지 않습니다. Camera/ROS2 topic 이름과 Vision 알고리즘은 이번 구조 변경에서 수정하지 않았습니다. 실제 Isaac Sim 확인 절차는 [`ISAAC_SIM_SMOKE_TEST.md`](docs/ISAAC_SIM_SMOKE_TEST.md), 상세 분석과 보존 판단은 [`REFACTOR_ANALYSIS.md`](docs/development/REFACTOR_ANALYSIS.md)를 참고하세요.
 
-`08f0d16^`와 `08f0d16`을 비교한 후속 검수 결과 및 최소 회귀 수정은 [`ASTRA_REVIEW_REPORT.md`](ASTRA_REVIEW_REPORT.md)에 기록되어 있습니다. 정적 검사와 모의 World 테스트는 실제 Isaac Sim 동작 검증을 대신하지 않습니다.
+`08f0d16^`와 `08f0d16`을 비교한 후속 검수 결과 및 최소 회귀 수정은 [`ASTRA_REVIEW_REPORT.md`](docs/development/ASTRA_REVIEW_REPORT.md)에 기록되어 있습니다. 정적 검사와 모의 World 테스트는 실제 Isaac Sim 동작 검증을 대신하지 않습니다.
 
 ---
 

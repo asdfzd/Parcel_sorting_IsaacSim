@@ -397,7 +397,7 @@ Current는 이번 수정 후 working tree이며 Sol 결함은 Notes에 명시한
 | `ISAAC_SIM_SMOKE_TEST.md` | shared lifecycle·slot·anchor·종료·Vision 경계 검증 보완 |
 | `ASTRA_REVIEW_REPORT.md` | 본 보고서 및 기능 비교표 |
 
-M0609 아래 경로는 `Collected_Conveyor_lift_test_01/M0609/` 기준이다.
+M0609 아래 경로는 `isaacsim_dual_robot_palletizing/M0609/` 기준이다.
 config profile, motion algorithm, RMPFlow 값, controller behavior, topic/service 이름,
 Vision 모델/알고리즘 및 asset/folder 이름은 변경하지 않았다.
 
@@ -408,7 +408,7 @@ Vision 모델/알고리즘 및 asset/folder 이름은 변경하지 않았다.
 - `python -m unittest discover -s tests -v`: **17개 통과**(기존 8 + 신규 9).
   baseline에서 신규 핵심 3개는 duplicate B 등록 1 error, stale result 2 failure로
   먼저 실패했으며 수정 후 통과했다.
-- `python -m compileall -q Collected_Conveyor_lift_test_01/M0609 Vision tests`: 통과.
+- `python -m compileall -q isaacsim_dual_robot_palletizing/M0609 Vision tests`: 통과.
   새 bytecode는 임시 cache prefix를 사용했다.
 - 저장소 Python 30개 AST parse: 통과. production source injection 미발견.
 - common module relative import 순환 검사, Config/entrypoint/dual single reset 구조
@@ -424,7 +424,7 @@ Vision 모델/알고리즘 및 asset/folder 이름은 변경하지 않았다.
 감사 환경은 임시 설치 위치를 `PYTHONPATH`로 지정했으며 production dependency나
 시스템 Python 설치를 변경하지 않았다. 테스트는 Isaac 엔진 대신 import 대역을 쓴다.
 
-`NEEDS_ISAAC_SIM_TEST`: 보완한 [smoke checklist](ISAAC_SIM_SMOKE_TEST.md)의
+`NEEDS_ISAAC_SIM_TEST`: 보완한 [smoke checklist](../ISAAC_SIM_SMOKE_TEST.md)의
 A standalone, B standalone, dual 순서로 실제 확인해야 한다. 특히 A/B 각 robot
 등록 → 올바른 suction body0/body1 → lift/swing → marker/yaw/lower → release/home
 → repeat, A forklift, B 병렬 lower, camera publish, gate까지 완료 전에는

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-M0609_DIR = Path(__file__).resolve().parents[1] / "Collected_Conveyor_lift_test_01" / "M0609"
+M0609_DIR = Path(__file__).resolve().parents[1] / "isaacsim_dual_robot_palletizing" / "M0609"
 sys.path.insert(0, str(M0609_DIR))
 
 

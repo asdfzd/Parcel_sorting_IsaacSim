@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-M0609_DIR = PROJECT_ROOT / "Collected_Conveyor_lift_test_01" / "M0609"
+M0609_DIR = PROJECT_ROOT / "isaacsim_dual_robot_palletizing" / "M0609"
 if str(M0609_DIR) not in sys.path:
     sys.path.insert(0, str(M0609_DIR))
 
