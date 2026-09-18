@@ -5,3 +5,8 @@
 browse.vc.db
 *.db
 .ipch/
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
